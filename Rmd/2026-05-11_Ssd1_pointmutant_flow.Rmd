@@ -1,0 +1,305 @@
+---
+title: "2026-05-11_Ssd1_pointmutant_flow"
+author: "Benny Kleinerman"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 2
+date: "2026-05-11"
+---
+
+# Summary
+
+Summary: Analysis of the flow cytometry data gathered 2026-02-17, on episomal Ssd1 RNA-binding point mutants, in a Sun4-mNeonGreen reporter background.
+
+This script only includes code to generate figures for the paper. Additional code is in 2026-02-17_Ssd1_pm_redo or similar scripts.
+
+# Load packages
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, messages = FALSE, warning = FALSE)
+library(tidyverse)
+library(cowplot)
+theme_set(theme_cowplot(font_size = 12) +
+            theme(strip.background = element_blank()))
+library(ggridges)
+library(flowCore)
+library(ggbeeswarm)
+library(ggpubr)
+```
+
+# Define functions to load flow cytometry data, using FlowCore package
+
+```{r functions_load}
+repair_flow_colnames <- function(string) {
+  string %>%
+    stringr::str_replace_all(" ", "") %>%
+    stringr::str_replace_all("PE-", "PE") %>%
+    stringr::str_replace_all("-", "_")
+}
+
+read_fcs_tibble <- function(file,...) {
+  read.FCS(file,...) %>%
+    .@exprs %>%
+    as_tibble %>%
+    set_names(repair_flow_colnames(names(.)))
+}
+```
+
+# Describe the data
+
+First we load the sample sheet, that describes the sample contents and filenames.
+
+```{r load_samplesheet}
+datadir <- here::here("2026-02-17_Ssd1_pm_redo")
+
+samplesheet <- paste(datadir, "/2026-02-17_Ssd1_pm_redo_plan.xlsx", sep = "") %>%
+  readxl::read_excel(skip = 4) %>%
+  mutate(Biorep = factor(Biorep))
+
+print(samplesheet, n = 19)
+```
+
+# Load all the data
+
+Next we load the data from all those files.
+
+```{r load_all_data}
+flow_data_all <- samplesheet  %>%
+  group_by(Sample, ID, Biorep, SSD1_homolog_unstructured, SSD1_homolog_structured, Expression, mRuby2, Culture_media, Strain, Experiment, Filename) %>%
+  do( read_fcs_tibble(paste(datadir, .$Filename[1], sep = "/")) )
+```
+
+# Gate data
+
+Here we gate the data for budded singlets. We have identified singlets in spectral flow cytometry analysis from February 2026
+
+Gates for other populations are in the older scripts, described in the Summary
+
+```{r gate_data}
+# Gate containing budded singlet cells, as identified by imaging flow cytometry
+flow_data_gated_buddedsinglets <- flow_data_all %>%
+  dplyr::filter(FSC_H > 30000, FSC_H < 60000,
+                FSC_W > 66000, FSC_W < 72000)
+```
+
+# How many events remain after gating?
+
+```{r inspect_flow_data}
+flow_data_all
+
+flow_count_gates <- 
+  left_join(flow_data_all %>%
+              group_by(Filename) %>%
+              tally(),
+            flow_data_gated_buddedsinglets %>%
+              group_by(Filename) %>%
+              tally(),
+            by = c("Filename"),
+            suffix = c("_all", "_gated") ) %>%
+  mutate(prop_gated = n_gated / n_all)
+
+print(flow_count_gates, n = 19)
+```
+
+Samples still have thousands of events after gating
+
+# Compare mNeonGreen (FITC) signal with FSC_A (forward scatter area)
+
+## mRuby2 control (ssd1Δ)
+
+```{r FITC_vs_FSC_A_ssd1Δ, fig.height = 3, fig.width = 4}
+ggplot(
+  data = dplyr::filter(flow_data_gated_buddedsinglets, Strain == "dual stain"),
+  aes(x = FSC_A, y = `530_30(488)_A`)) +
+  geom_hex(bins = 64) +
+  scale_fill_gradientn(colours = rainbow(6)[1:5]) +
+  stat_cor(
+    method = "pearson",
+    aes(label = ..r.label..),
+    label.sep = "",      
+    r.accuracy = 0.01,    
+    label.x = 30000,
+    label.y = 12000) +
+  ylim(c(0, 12000))
+```
+
+## WT
+
+```{r FITC_vs_FSC_A_WT, fig.height = 3, fig.width = 4}
+ggplot(
+  data = dplyr::filter(flow_data_gated_buddedsinglets, Strain == "pRNR2-ScSSD1-mRuby2"),
+  aes(x = FSC_A, y = `530_30(488)_A`)) +
+  geom_hex(bins = 64) +
+  scale_fill_gradientn(colours = rainbow(6)[1:5]) +
+  stat_cor(
+    method = "pearson",
+    aes(label = ..r.label..),
+    label.sep = "",      
+    r.accuracy = 0.01,    
+    label.x = 30000,
+    label.y = 6000) +
+  ylim(c(0, 7500))
+```
+
+mNeonGreen scales with FSC_A, at least for these 2 strains
+
+# Ridgeplots of mNeonGreen for ssd1 point mutant strains
+
+## First create a new column in the budded singlets dataset, with readable Strain names
+
+```{r ssd1pm_ssd1locus}
+flow_data_gated_buddedsinglets <- flow_data_gated_buddedsinglets %>%
+  mutate(ssd1locus = forcats::fct_recode(Strain,
+      "WT" = "pRNR2-ScSSD1-mRuby2",
+      "Empty" = "ssd1Δ",
+      "Empty mRuby2" = "dual stain",
+      "R394A" = "pRNR2-Scssd1R394A-mRuby2",
+      "W583A" = "pRNR2-Scssd1W583A-mRuby2",
+      "K589A" = "pRNR2-Scssd1K589A-mRuby2",
+      "KR622-623AA" = "pRNR2-Scssd1KR622-623AA-mRuby2",
+      "H630A" = "pRNR2-Scssd1H630A-mRuby2"),
+    ssd1locus = fct_rev(ssd1locus))
+```
+
+## SUN4-mNeonGreen, with FSC normalization
+
+```{r ssd1pm_FITC/FSC_ridgeplot, fig.height =5, fig.width = 8}
+
+mNG <- ggplot(
+  data = flow_data_gated_buddedsinglets,
+  aes(x = `530_30(488)_A` / FSC_A, y = ssd1locus)) +
+  stat_density_ridges(
+    scale = 1,
+    linewidth = 1.5,
+    alpha = 0.2,
+    colour = "#008000ff",
+    fill = "#008000ff",
+    bandwidth = 0.01) +
+  stat_summary(
+    aes(group = interaction(Strain, Biorep), shape = Biorep),
+    colour = "#008000ff",
+    fun = mean,
+    geom = "point",
+    size = 4,
+    stroke = 2,
+    position = position_quasirandom(groupOnX = FALSE, width = 0.1)) +
+  labs(x = "mNeonGreen/FSC-A", y = "Strain") +
+  theme(
+    panel.grid.major.x = element_line(colour = "grey80"),
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.y = element_text(vjust = -0.1)) +
+  coord_cartesian(expand = TRUE, clip = 'off') +
+  scale_x_continuous(limits = c(0, 0.2)) +
+  scale_shape_manual(values = c(0, 1, 2))
+
+mNG
+
+# I manually annotate axis labels and legends in inkscape
+
+ggsave(
+  filename = "U:/data/2026/05-May/Benny/2026-05-11_Ssd1_pointmutants_mNG_flow.svg",
+  plot = mNG,
+  device = "svg",
+  width = 10,
+  height = 10,
+  limitsize = FALSE)
+```
+
+Generally, RNA-binding Ssd1 point mutants fail to regulate Sun4-mNeonGreen expression. The exception to this is the K589A mutant
+
+## Ssd1-mRuby2
+
+```{r ssd1pm_mRuby2_ridgeplot_small, fig.height = 5, fig.width = 8}
+
+mRuby2 <- ggplot(dplyr::filter(
+  flow_data_gated_buddedsinglets, `610_20(561)_A` > 0),
+  aes(x = `610_20(561)_A`, y = ssd1locus)) +
+  stat_density_ridges(
+    scale = 1,
+    linewidth = 1.5,
+    alpha = 0.2,
+    bandwidth = 0.15,
+    colour = "#C48A95",
+    fill = "#F6C1D1") +
+  stat_summary(
+    aes(group = interaction(Strain, Biorep), shape = Biorep),
+    fun = mean,
+    geom = "point",
+    size = 4,
+    stroke = 2,
+    colour = "#C48A95",
+    position = position_quasirandom(groupOnX = FALSE, width = 0.1)) +
+  labs(x = "mRuby2", y = "Strain") +
+  theme(
+    panel.grid.major.x = element_line(colour = "grey80"),
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.y = element_text(vjust = -0.1)) +
+  coord_cartesian(expand = TRUE, clip = 'off') +
+  scale_x_log10(breaks = c(10, 1000, 100000),
+    labels = c("10", "1000", "100000")) +
+  scale_colour_manual(values = c("#C48A95")) +
+  scale_fill_manual(values = c("#F6C1D1")) +
+  scale_shape_manual(values = c(0, 1, 2))
+
+mRuby2
+
+# I manually annotate axis labels and legends in inkscape
+
+ggsave(
+  filename = "U:/data/2026/05-May/Benny/2026-03-14_Ssd1_pointmutant_mRuby2_flow.svg",
+  plot = mRuby2,
+  device = "svg",
+  width = 10,
+  height = 10,
+  limitsize = FALSE)
+```
+
+All point mutants are expressing from plasmids under pRNR2. Translational repression aligns well with growth on CFW
+
+# Calculate fold changes between the strain means
+
+## mRuby2, comparing all strains to the empty plasmid strain
+
+```{r ssd1pm_mRuby2_fc}
+# Set Empty plasmid strain as the reference
+
+flow_data_gated_buddedsinglets_emptyref <- flow_data_gated_buddedsinglets %>%
+  dplyr::filter(`610_20(561)_A` > 0) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(ssd1locus = relevel(as.factor(ssd1locus), ref = "Empty"))
+
+# log10 linear model
+
+fit_mRuby2 <- lm(
+  log10(`610_20(561)_A`) ~ ssd1locus,
+  data = flow_data_gated_buddedsinglets_emptyref)
+
+foldchange_mRuby2 <- 10^{ coef(fit_mRuby2)[-1] }
+foldchange_mRuby2
+```
+
+The empty mRuby2 construct (no Ssd1) produces 35 times as much red signal as background in an mRuby2-less strain, and the constructs with Ssd1 produce ~10 times as much red signal
+
+## mNeonGreen, comparing all strains to wild-type Ssd1
+
+```{r ssd1pm_mNG/FSC_fc}
+# Set WT Ssd1 strain as the reference
+
+flow_data_gated_buddedsinglets_WTref <- flow_data_gated_buddedsinglets %>%
+  dplyr::filter(`530_30(488)_A` > 0) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(ssd1locus = relevel(as.factor(ssd1locus), ref = "WT"))
+
+# linear model
+
+fit_mNG <- lm(
+  log10(`530_30(488)_A`/FSC_A) ~ ssd1locus,
+  data = flow_data_gated_buddedsinglets_WTref)
+
+foldchange_mNG <- 10^{ coef(fit_mNG)[-1] }
+foldchange_mNG
+```
+There is 2.72 times as much mNeonGreen in ssd1 deletion cells as Wild Type Ssd1

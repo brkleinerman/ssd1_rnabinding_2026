@@ -1,0 +1,397 @@
+---
+title: "RT-qPCR 2026-01-18 on SUN4-mNG 5' UTR mutant strains"
+author: "Benny Kleinerman & Edward Wallace"
+date: "18/01/2026"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 2
+---
+
+# Experimental Design
+
+Replicates:
+
+- 3 biological replicates are collected for each strain
+- 3 technical replicates +RT and 1 -RT
+
+Test Primers:
+
+- mNG_1
+- SUN4_1
+
+Reference gene primers: 
+- ACT1_1
+- PGK1_2
+- SRO9_1
+- SSD1_1
+
+```{r load_tidyqpcr}
+library(tidyqpcr)
+library(forcats)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggbeeswarm)
+```
+
+# Describe the experimental design in a plate plan
+
+## Columns are target_ids of primer sets
+
+```{r target_ids}
+colkey <- create_colkey_6_in_24(
+  target_id = c("mNG_1", "SUN4_1", "ACT1_1", "PGK1_2", "SRO9_1", "SSD1_1") %>% 
+    as_factor()
+)
+
+print(colkey)
+```
+
+
+## Rows are sample name, Strain, BioRep (3) and TechRep (3)
+
+Also choose colours to display strains.
+
+```{r samples_1-8}
+strain_df <- tibble(
+  Strain = c(
+    "yMJ003",
+    "yBK023",
+    "yBK012",
+    "yMJ011",
+    "yBK032",
+    "yBK013",
+    "yMJ039",
+    "yBK010",
+    "yMJ041",
+    "yBK011"),
+  fiveprimeUTR = c(
+    "WT",
+    "intronless",
+    "PGK1",
+    "WT",
+    "intronless",
+    "PGK1",
+    "WT",
+    "PGK1",
+    "WT",
+    "PGK1"),
+  threeprimeUTR = c(rep("ADH1", 6), rep("SUN4", 4)),
+  background = c(
+    rep("Wild Type", 3),
+    rep("ssd1delta", 3),
+    rep("Wild Type", 2),
+    rep("ssd1delta", 2)),
+  colour = rgb(runif(10), runif(10), runif(10)))
+
+scale_color_strain <- 
+  scale_color_manual("Strain",
+                     breaks = strain_df$Strain,
+                     values = strain_df$colour)
+
+rowkey <- tibble(well_row = c((LETTERS[1:16]), LETTERS[1:14]), 
+                 Strain = strain_df$Strain %>% 
+                   rep(each = 3) %>% 
+                   as_factor(),
+                 fiveprimeUTR = strain_df$fiveprimeUTR %>% 
+                   rep(each = 3) %>% 
+                   as_factor(),
+                 threeprimeUTR = strain_df$threeprimeUTR %>% 
+                   rep(each = 3) %>% 
+                   as_factor(),
+                 background = strain_df$background %>% 
+                   rep(each = 3) %>% 
+                   as_factor(),
+                 BioRep = 1:3 %>% 
+                   as_factor() %>%
+                   rep(times = 10)) %>%
+  unite(sample_id, Strain, BioRep, remove = FALSE) %>%
+  mutate(sample_id = as_factor(sample_id))
+
+print(rowkey)
+```
+
+## Combine into plate plan
+
+```{r plate_plan_1, fig.width = 12, fig.height = 8}
+
+plate_plan_1 <- label_plate_rowcol(
+  plate = create_blank_plate(well_row = LETTERS[1:16], well_col = 1:24),
+  rowkey = rowkey %>%
+  dplyr::slice(1:16),
+  colkey = colkey
+)
+
+print(plate_plan_1)
+display_plate_qpcr(plate_plan_1)
+
+```
+
+```{r plate_plan_2, fig.width = 12, fig.height = 8}
+
+plate_plan_2 <- label_plate_rowcol(
+  plate = create_blank_plate(well_row = LETTERS[1:14], well_col = 1:24),
+  rowkey = rowkey %>%
+  dplyr::slice(17:30),
+  colkey = colkey
+)
+
+print(plate_plan_2)
+display_plate_qpcr(plate_plan_2)
+
+```
+
+# Load data of RT-qPCR results in Cq format
+
+```{r load_data}
+
+plate_1 <- here::here("2026-01-28_SUN4-mNG_RTqPCR_replacedUTRs/2026-01-28_SUN4-mNG_RTqPCR_replacedUTRs_p1_BK_Ct.txt") %>%
+  read_tsv(skip=1) %>%
+    mutate(well=Pos,cq=Cp, plate_id = "1") %>%
+    right_join(plate_plan_1)
+
+plate_2 <- here::here("2026-01-28_SUN4-mNG_RTqPCR_replacedUTRs/2026-01-28_SUN4-mNG_RTqPCR_replacedUTRs_p2_BK_Ct.txt") %>%
+  read_tsv(skip=1) %>%
+    mutate(well=Pos,cq=Cp, plate_id = "2") %>%
+    right_join(plate_plan_2)
+
+plates <- bind_rows(plate_1, plate_2)
+plates
+
+```
+
+# Plot all replicates, unnormalized
+
+```{r plot_plate, fig.width = 7, fig.height = 12}
+
+ggplot(data = plates) +
+  geom_point(aes(x = target_id, y = cq, shape = prep_type, colour = target_id),
+    position = position_jitter(width = 0.2, height = 0)
+  ) +
+  labs(
+    y = "Quantification cycle (Cq)",
+    title = "All reps, unnormalized, plate"
+  ) +
+  facet_wrap(~sample_id, ncol = 5) +
+  theme_classic() + 
+  theme(panel.grid.major.y = element_line(colour= "grey80"),
+        panel.grid.minor = element_blank(),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+```
+
+The high or absent Cq values in -RT reactions indicate absence of DNA contamination.
+
+
+# Double-check Cq values of SUN4-mNeonGreen scarless in WT and ssd1delta backgrounds
+
+```{r plot_plate_SUN4-mNG-scarless, fig.width = 6, fig.height = 7}
+
+ggplot(data = plates %>%
+         dplyr::filter(Strain %in% c("yMJ039", "yMJ041"))) +
+  geom_point(aes(x = target_id, y = cq, shape = prep_type, colour = target_id),
+    position = position_jitter(width = 0.2, height = 0)
+  ) +
+  labs(
+    y = "Quantification cycle (Cq)",
+    title = "All reps, unnormalized, plate"
+  ) +
+  facet_wrap(~sample_id, ncol = 3) +
+  scale_y_continuous(limits = c(12,20), breaks = seq(10,25)) +
+  theme_classic() + 
+  theme(panel.grid.major.y = element_line(colour= "grey80"),
+        panel.grid.minor = element_blank(),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+```
+
+ssd1delta (yMJ041) mNG Cq values are higher than WT. This is opposite to the effect of ssd1 deletion on Sun4-mNeonGreen protein expression
+
+# Check reference genes have consistent Cq across samples
+
+```{r plate_sep_refgenes, fig.width = 12, fig.height = 4}
+ggplot(data = dplyr::filter(plates, target_id %in% c("ACT1_1", "PGK1_2", "SRO9_1") )) +
+  geom_point(aes(x = target_id, y = cq, shape = prep_type, colour = target_id),
+    position = position_jitter(width = 0.2, height = 0)) +
+  facet_grid(~sample_id) +
+  theme_classic() + 
+  theme(panel.grid.major.y = element_line(colour= "grey80"),
+        panel.grid.minor = element_blank(),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        strip.text.x = element_text(angle = 90, vjust = 0.5))
+```
+
+Reference genes have fairly consistent Cq across samples
+
+# Normalise data by calculating ∆Cq against median of 3 reference genes
+
+```{r plate_norm}
+
+plate_norm <- plates %>%
+  dplyr::filter(prep_type == "+RT") %>%
+  droplevels() %>%
+  calculate_deltacq_bysampleid(ref_target_ids = c("ACT1_1", "PGK1_2", "SRO9_1"))
+
+plate_norm
+
+plate_norm_med <- plate_norm %>%
+  group_by(sample_id, Strain, fiveprimeUTR, threeprimeUTR, background, BioRep, target_id) %>%
+  summarize(
+    delta_cq = median(delta_cq, na.rm = TRUE),
+    rel_abund = median(rel_abund, na.rm = TRUE)
+  )
+
+plate_norm_med
+
+```
+
+# Plot ∆Cq for normalized data
+
+For all replicates of all genes, all samples.
+
+```{r plot_deltacq_all, fig.width = 8, fig.height = 4}
+
+ggplot(data = plate_norm) +
+  geom_point(aes(x = target_id, y = delta_cq, shape = BioRep),
+    position = position_jitter(width = 0.2, height = 0)
+  ) +
+  labs(x = "Target Gene", 
+         y = "Relative mRNA detection (∆Cq)") +
+  theme_classic() + 
+  theme(panel.grid.major.y = element_line(colour= "grey80"),
+        panel.grid.minor = element_blank(),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_text(size = 10, angle = 90))
+
+```
+
+DeltaCq values are similar across strains and replicates
+
+# Normalise data by calculating ∆∆Cq against median of 1 reference sample (yMJ003)
+
+```{r plate_deltanorm}
+plate_deltanorm <- plate_norm %>%
+  calculate_deltadeltacq_bytargetid(ref_sample_ids = c("yMJ003_1", "yMJ003_2", "yMJ003_3"))
+
+plate_deltanorm_med <- plate_deltanorm %>%
+    mutate(UTRs = interaction(fiveprimeUTR, threeprimeUTR) %>%
+                  forcats::fct_recode(
+                    "PGK1 ADH1" = "PGK1.ADH1",
+                    "SUN4 (no intron) ADH1" = "intronless.ADH1",
+                    "SUN4 ADH1" = "WT.ADH1",
+                    "PGK1 SUN4" = "PGK1.SUN4",
+                    "SUN4 SUN4" = "WT.SUN4") %>%
+                  forcats::fct_relevel(
+                    "PGK1 ADH1",
+                    "SUN4 (no intron) ADH1",
+                    "SUN4 ADH1",
+                    "PGK1 SUN4",
+                    "SUN4 SUN4")) %>%
+    group_by(sample_id, target_id, Strain, fiveprimeUTR, threeprimeUTR, UTRs, background, BioRep) %>%
+  summarize(
+    deltadelta_cq  = median(deltadelta_cq, na.rm = TRUE),
+    fold_change    = median(fold_change,   na.rm = TRUE)
+  )
+
+plate_deltanorm_med
+```
+
+# Plot ∆∆Cq for normalized data
+
+For all genes, all samples, summarized by biological replicate.
+
+```{r plot_deltadelta_cq, fig.width = 8, fig.height = 4}
+set.seed(4)
+ggplot(data = plate_deltanorm_med,
+       aes(x = target_id, y = deltadelta_cq)
+       ) +
+  geom_point(
+    position = position_jitter(width = 0.4, height = 0),
+    size = 2
+  ) +
+  stat_summary(geom = "crossbar", fun = mean, fun.min = NULL, fun.max = NULL, aes(group=1)) +
+  labs(x = "Target Gene", 
+       y = "∆∆Cq (log2 fold-change)") +
+  theme_classic() + 
+  theme(panel.grid.major.y = element_line(colour= "grey80"),
+        panel.grid.minor = element_blank(),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_text(size = 10, angle = 90))
+
+```
+
+deltadeltaCq values are close to 0, for target and reference genes.
+
+# Plot deltadeltaCq values for mNeonGreen across all samples
+
+```{r deltadeltacq_mNG_utrs, fig.width = 6, fig.height = 7}
+mNG <- ggplot(data = dplyr::filter(plate_deltanorm_med, target_id %in% "mNG_1")) +
+  geom_point(aes(x = deltadelta_cq, y = UTRs,
+                 colour = background,
+                 group = interaction(Strain,BioRep),
+                 shape = BioRep,
+                 size = 2,
+                 stroke = 2),
+    position = position_quasirandom(groupOnX = FALSE, width = 0.15)) +
+  theme_classic() + 
+  labs(x = "ΔΔCq", y = "Strain") +
+  theme(panel.grid.major.x = element_line(colour= "grey80"),
+        panel.grid.minor = element_blank(),
+        axis.line = element_blank(),
+        axis.text.y = element_text(size = 14),
+        axis.text.x = element_text(size = 10),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        axis.ticks = element_blank()) +
+        scale_x_continuous(limits = c(-1.5, 1.5),
+                     breaks = c(-1, -.5, 0, .5, 1),
+                     labels = c("-1", "-0.5", "0", "0.5", "1")) +
+  guides(colour = guide_legend(override.aes = list(linetype = c(0, 0), fill = NA, alpha = 1)), size = "none") + 
+  scale_colour_manual(values = c("#005a00ff", "#7edc7eff")) +
+  scale_shape_manual(values = c(0,1,2))
+
+mNG
+```
+
+# Calculate linear model coefficients, to compare against flow cytometry signal intensities
+
+```{r lm_deltadeltacq_mNG_utrs, fig.width = 6, fig.height = 7} 
+plate_deltanorm_med_coeff <- plate_deltanorm_med %>% 
+          mutate(Strain = interaction(fiveprimeUTR, threeprimeUTR, background)) %>%
+          mutate(Strain = relevel(Strain, ref = "WT.SUN4.Wild Type"))
+
+fit_RTqPCR_utrs <- lm(deltadelta_cq ~ 0 + Strain, # removes intercept
+   data = dplyr::filter(plate_deltanorm_med_coeff, target_id %in% "mNG_1"))
+
+# make a table from the linear model coefficients
+fit_RTqPCR_utrs_tsv <- as.data.frame(summary(fit_RTqPCR_utrs)$coefficients)
+
+# write the table out to a .tsv file
+write.table(
+  fit_RTqPCR_utrs_tsv,
+  file = "fit_RTqPCR_utrs.tsv",
+  sep = "\t",
+  quote = FALSE,
+  col.names = NA)
+```
+
+# Fit a linear model that uses the no intron reference strain as intercept, and calculate fold changes
+
+```{r lm_deltadeltacq_mNG_utrs_2, fig.width = 6, fig.height = 7} 
+fit_RTqPCR_utrs_diffs <- lm(deltadelta_cq ~ Strain, # includes intercept
+   data = dplyr::filter(plate_deltanorm_med_coeff, target_id %in% "mNG_1"))
+
+foldchange_RTqPCR_utrs_diffs <- 2^{ coef(fit_RTqPCR_utrs_diffs)[-1] }
+foldchange_RTqPCR_utrs_diffs
+```
+

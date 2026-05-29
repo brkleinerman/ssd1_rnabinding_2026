@@ -1,0 +1,786 @@
+---
+title: "2026-05-12_SUN4_UTR_flow"
+author: "Benny Kleinerman"
+date: "2026-05-12"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 2
+---
+
+Summary: Analysis of the flow cytometry data gathered 2025-09-04, on Sun4-mNeonGreen reporter strains with modified UTRs.
+
+# Load packages
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, messages = FALSE, warning = FALSE)
+library(tidyverse)
+library(cowplot)
+theme_set(theme_cowplot(font_size = 12) +
+            theme(strip.background = element_blank()))
+library(ggridges)
+library(flowCore)
+library(ggbeeswarm)
+library(latex2exp)
+library(stringr)
+library(ggpubr)
+library(readr)
+```
+
+# Define functions to load flow cytometry data, using FlowCore package
+
+```{r functions_load}
+repair_flow_colnames <- function(string) {
+  string %>%
+    stringr::str_replace_all(" ", "") %>%
+    stringr::str_replace_all("PE-", "PE") %>%
+    stringr::str_replace_all("-", "_")
+}
+
+read_fcs_tibble <- function(file,...) {
+  read.FCS(file,...) %>%
+    .@exprs %>%
+    as_tibble %>%
+    set_names(repair_flow_colnames(names(.)))
+}
+
+```
+
+# Describe the data
+
+First we load the sample sheet, that describes the sample contents and filenames.
+
+We also make some of the data factors in the desired order, and create a "BioRep" (biological replicate) column from the strain ID.
+
+```{r load_samplesheet}
+datadir <- here::here("2025-09-04_SUN4-mNG_flow")
+
+samplesheet <- paste(datadir, "/2025-09-04_SUN4-mNG_flowplan.xlsx", sep = "") %>%
+  readxl::read_excel(skip = 5) %>%
+  mutate(Five_prime_UTR = factor(Five_prime_UTR, levels = rev(c(
+        "SUN4",
+        "xintless",
+        "delSBM1x",
+        "delSBM12x",
+        "delSBMregx",
+        "mutSBM1x",
+        "mutSBM12x",
+        "mutSBM12altx",
+        "PGK1"))),
+      Five_prime_UTR_hr = forcats::fct_recode(Five_prime_UTR,
+        "Native (no intron)" = "xintless",
+        "Del-1" = "delSBM1x",
+        "Del-2" = "delSBM12x",
+        "Del-3" = "delSBMregx",
+        "Sub-1" = "mutSBM1x",
+        "Sub-2" = "mutSBM12x",
+        "Sub-3" = "mutSBM12altx"), # I manually annotate my plots with these anyway, this just helps with that
+      Background = factor(Background, levels = c("Wild Type", "ssd1Δ")),
+      Techrep = factor(Techrep))
+
+print(samplesheet, n = 19)
+```
+
+# Load all the data
+
+Next we load the data from all those files.
+
+```{r load_all_data}
+flow_data_all <- samplesheet %>%
+  group_by(Sample, ID, Techrep, Construct, Background, Five_prime_UTR, Five_prime_UTR_hr, Three_prime_UTR, Stain, Code, Filename) %>%
+  do( read_fcs_tibble(paste(datadir, .$Filename[1], sep = "/")) )
+```
+
+# Gate data for singlets
+
+Here we gate the data for budded singlets. We have identified singlets in spectral flow cytometry analysis from February 2026
+
+```{r gate_data}
+# Gate containing budded singlet cells, as identified by imaging flow cytometry
+flow_data_gated_buddedsinglets <- flow_data_all %>%
+  dplyr::filter(FSC_H > 45000, FSC_H < 90000,
+                FSC_W > 64000, FSC_W < 72000)
+```
+
+### Calculate the proportion of gated events
+
+```{r inspect_flow_data}
+flow_data_all
+
+flow_count_gates <- 
+  left_join(flow_data_all %>%
+              group_by(Filename, ID, Construct, Stain, Code) %>%
+              tally(),
+            flow_data_gated_buddedsinglets %>%
+              group_by(Filename, ID, Construct, Stain, Code) %>%
+              tally(),
+            by = c("Filename","ID","Construct","Stain", "Code"),
+            suffix = c("_all", "_gated") ) %>%
+  mutate(prop_gated = n_gated / n_all)
+
+print(flow_count_gates, n = 19)
+```
+
+Samples still have thousands of events after gating
+
+# Comparing forward scatter height (FSC_H) with forward scatter width (FSC_W) to display the gating strategy
+
+## Wild Type
+
+```{r FSC_W_vs_FSC_H_WT, fig.height = 5, fig.width = 5}
+fsc_wt <- ggplot(
+  data = dplyr::filter(flow_data_all, Code == "Native5UTR_Nativeterm_Wildtype", Techrep == 2), # Wild type reporter strain
+  aes(x = FSC_H, y = FSC_W)) +
+  geom_hex(bins = 300) +
+  scale_fill_gradientn(colours = rainbow(6)[1:5]) +
+  theme(
+    text = element_text(family = "sans"),
+    axis.line = element_line(colour = "grey80"),
+    axis.ticks = element_blank()) +
+  labs(x = "Forward scatter height", y = "Forward scatter width") +
+  scale_x_continuous(
+    limits = c(20000, 200000),
+    breaks = c(50000, 100000, 150000, 200000),
+    labels = c("50", "100", "150", "200")) +
+  scale_y_continuous(
+    limits = c(60000, 100000),
+    breaks = c(70000, 80000, 90000, 100000),
+    labels = c("70", "80", "90", "100")) +
+  geom_rect(
+    xmin = 45000,
+    xmax = 90000,
+    ymin = 64000,
+    ymax = 72000,
+    fill = NA,
+    colour = "black",
+    linewidth = 0.5) # overlays a rectangle on the plot, indicating gating strategy
+
+fsc_wt
+```
+
+## ssd1Δ
+
+```{r FSC_W_vs_FSC_H_delta, fig.height = 5, fig.width = 5}
+fsc_delta <- ggplot(
+  data = dplyr::filter(flow_data_all, Code == "Native5UTR_Nativeterm_ssd1Δ", Techrep == 1), # ssd1Δ reporter strain, techrep 1
+  aes(x = FSC_H, y = FSC_W)) +
+  geom_hex(bins = 300) +
+  scale_fill_gradientn(colours = rainbow(6)[1:5]) +
+  theme(
+    text = element_text(family = "sans"),
+    axis.line = element_line(colour = "grey80"),
+    axis.ticks = element_blank()) +
+  labs(x = "Forward scatter height", y = "Forward scatter width") +
+  scale_x_continuous(
+    limits = c(20000, 200000),
+    breaks = c(50000, 100000, 150000, 200000),
+    labels = c("50", "100", "150", "200")) +
+  scale_y_continuous(
+    limits = c(60000, 100000),
+    breaks = c(70000, 80000, 90000, 100000),
+    labels = c("70", "80", "90", "100")) +
+  geom_rect(
+    xmin = 45000,
+    xmax = 90000,
+    ymin = 64000,
+    ymax = 72000,
+    fill = NA,
+    colour = "black",
+    linewidth = 0.5)
+
+fsc_delta
+```
+
+# Compare mNeonGreen (FITC) signal with FSC_A (forward scatter area), to justify using FSC as a normalisation strategy. 
+
+## filter the singlets gated dataset for swapped UTR strains first
+
+```{r utrs_singlets}
+flow_data_gated_buddedsinglets_utrs <- flow_data_gated_buddedsinglets %>%
+  dplyr::filter(
+    Construct %in% c(
+      "fSUN4-SUN4-mNG-tADH1",
+      "fPGK1-SUN4-mNG-tADH1",
+      "fSUN4-SUN4-mNG-tSUN4",
+      "fPGK1-SUN4-mNG-tSUN4",
+      "fxintless-SUN4-mNG-tADH1"), # filter for constructs with intact UTRs
+    !stringr::str_detect(Code, "control")) %>% # exclude unstained controls
+  mutate(Construct_hr = interaction(Five_prime_UTR, Three_prime_UTR) %>%
+           factor(
+             levels = c(
+               "PGK1.ADH1",
+               "xintless.ADH1",
+               "SUN4.ADH1",
+               "PGK1.SUN4",
+               "SUN4.SUN4"),
+             labels = c(
+               "PGK1  ADH1",
+               "SUN4 (no intron)  ADH1",
+               "SUN4  ADH1",
+               "PGK1  SUN4",
+               "SUN4  SUN4"))) %>% # Create levels and labels for ridge plot
+  mutate(Strain = interaction(Five_prime_UTR, Three_prime_UTR, Background) %>%
+           factor(levels = rev(
+             c("PGK1.ADH1.ssd1Δ",
+               "PGK1.ADH1.Wild Type",
+               "xintless.ADH1.ssd1Δ",
+               "xintless.ADH1.Wild Type",
+               "SUN4.ADH1.ssd1Δ",
+               "SUN4.ADH1.Wild Type",
+               "PGK1.SUN4.ssd1Δ",
+               "PGK1.SUN4.Wild Type",
+               "SUN4.SUN4.ssd1Δ",
+               "SUN4.SUN4.Wild Type")))) # Create levels for faceted plot below
+```
+
+### plot mNeonGreen vs FSC area for the intact UTR strains, gated for singlets
+
+```{r FITC_vs_FSC_A_singlets_utrs, fig.height = 12, fig.width = 6}
+mng_fsc_utr_singlets <- ggplot(
+  data = flow_data_gated_buddedsinglets_utrs,
+  aes(x = FSC_A, y = FITC_A)) +
+  geom_hex(bins = 64) +
+  scale_fill_gradientn(colours = rainbow(6)[1:5]) +
+  stat_cor(
+    method = "pearson",
+    aes(label = ..r.label..),
+    label.sep = "",      
+    r.accuracy = 0.01,    
+    label.x = 40000,
+    label.y = 3000) + # annotates with pearson R value
+  ggh4x::facet_wrap2(
+  ~ Strain,
+  scales = "fixed",
+  ncol = 2,
+  axes = "all",
+  remove_labels = "all") +
+  labs(x = "mNGFlow", y = "Forward scatter area") +
+  theme(text = element_text(family = "sans"),
+        axis.line = element_line(colour= "grey80"),
+        axis.ticks = element_line(colour = "grey80"),
+        strip.text = element_blank()) + 
+  scale_x_continuous(breaks = c(50000, 70000, 90000),
+                     labels = c("50", "70", "90")) +
+  scale_y_continuous(limits = c(0, 3000),
+                     breaks = c(500, 1500, 2500),
+                     labels = c("0.5", "1.5", "2.5"))
+
+mng_fsc_utr_singlets
+```
+
+R is between 0.02 and 0.31, for these strains
+
+## filter the ungated dataset for intact UTR strains.
+
+```{r utrs_ungated}
+flow_data_utr <- flow_data_all %>%
+  dplyr::filter(
+    Construct %in% c(
+      "fSUN4-SUN4-mNG-tADH1",
+      "fPGK1-SUN4-mNG-tADH1",
+      "fSUN4-SUN4-mNG-tSUN4",
+      "fPGK1-SUN4-mNG-tSUN4",
+      "fxintless-SUN4-mNG-tADH1"),
+    !stringr::str_detect(Code, "control")) %>% # exclude unstained controls
+  mutate(Construct_hr = interaction(Five_prime_UTR, Three_prime_UTR) %>%
+           factor(levels = c(
+               "PGK1.ADH1",
+               "xintless.ADH1",
+               "SUN4.ADH1",
+               "PGK1.SUN4",
+               "SUN4.SUN4"))) %>%
+  mutate(Strain = interaction(Five_prime_UTR, Three_prime_UTR, Background) %>%
+           factor(levels = rev(c(
+               "PGK1.ADH1.ssd1Δ",
+               "PGK1.ADH1.Wild Type",
+               "xintless.ADH1.ssd1Δ",
+               "xintless.ADH1.Wild Type",
+               "SUN4.ADH1.ssd1Δ",
+               "SUN4.ADH1.Wild Type",
+               "PGK1.SUN4.ssd1Δ",
+               "PGK1.SUN4.Wild Type",
+               "SUN4.SUN4.ssd1Δ",
+               "SUN4.SUN4.Wild Type"))))
+```
+
+### plot mNeonGreen vs FSC for this dataset
+
+```{r FITC_vs_FSC_A_utrs, fig.height = 12, fig.width = 6}
+mng_fsc_utr <- ggplot(
+  data = flow_data_utr,
+  aes(x = FSC_A, y = FITC_A)) +
+  geom_hex(bins = 100) +
+  scale_fill_gradientn(colours = rainbow(6)[1:5]) +
+  stat_cor(
+    method = "pearson",
+    aes(label = ..r.label..),
+    label.sep = "",      
+    r.accuracy = 0.01,    
+    label.x = 0,
+    label.y = 9000) + # annotates with pearson R value
+  ggh4x::facet_wrap2(
+  ~ Strain,
+  scales = "fixed",
+  ncol = 2,
+  axes = "all",
+  remove_labels = "all") +
+  labs(x = "mNGFlow", y = "Forward scatter area") +
+  theme(text = element_text(family = "sans"),
+        axis.line = element_line(colour= "grey80"),
+        axis.ticks = element_line(colour = "grey80"),
+        strip.text = element_blank()) +
+  scale_x_continuous(breaks = c(50000,150000,250000),
+                     labels = c("50", "150", "250")) +
+  scale_y_continuous(limits = c(0, 10000),
+                     breaks = c(2000, 6000),
+                     labels = c("2", "6"))
+
+mng_fsc_utr
+```
+
+R is much higher when not gating. Number of cells per event or cluster scales well with mNeonGreen intensity
+
+## filter the singlet dataset for strains with ADH1 terminator
+
+```{r tadh1_singlets}
+flow_data_gated_buddedsinglets_tadh1 <-
+  flow_data_gated_buddedsinglets %>%
+  dplyr::filter(
+    Three_prime_UTR == "ADH1", 
+    !stringr::str_detect(Code, "control"), # exclude no stain samples
+    !Five_prime_UTR %in% c("PGK1", "SUN4")) %>% # exclude these because they are included in the swapped UTRs plot
+  mutate(Strain = factor(interaction(Five_prime_UTR, Background), levels = c(
+          "xintless.Wild Type",
+          "xintless.ssd1Δ",
+          "delSBM1x.Wild Type",
+          "delSBM1x.ssd1Δ",
+          "delSBM12x.Wild Type",
+          "delSBM12x.ssd1Δ",
+          "delSBMregx.Wild Type",
+          "delSBMregx.ssd1Δ",
+          "mutSBM1x.Wild Type",
+          "mutSBM1x.ssd1Δ",
+          "mutSBM12x.Wild Type",
+          "mutSBM12x.ssd1Δ",
+          "mutSBM12altx.Wild Type",
+          "mutSBM12altx.ssd1Δ")))
+```
+
+### plot mNeonGreen vs FSC for this dataset
+
+```{r FITC_vs_FSC_A_singlets_tadh1, fig.height = 12, fig.width = 6}
+mng_fsc_tadh1_singlets <- ggplot(
+  data = flow_data_gated_buddedsinglets_tadh1,
+  aes(x = FSC_A, y = FITC_A)) +
+  geom_hex(bins = 64) +
+  scale_fill_gradientn(colours = rainbow(6)[1:5]) +
+  stat_cor(
+    method = "pearson",
+    aes(label = ..r.label..),
+    label.sep = "",      
+    r.accuracy = 0.01,    
+    label.x = 40000,
+    label.y = 3000) + # annotates with pearson R value
+  ggh4x::facet_wrap2(
+  ~ Strain,
+  scales = "fixed",
+  ncol = 2,
+  axes = "all",
+  remove_labels = "all") +
+  labs(x = "mNGFlow", y = "Forward scatter area") +
+  theme(text = element_text(family = "sans"),
+        axis.line = element_line(colour= "grey80"),
+        axis.ticks = element_line(colour = "grey80"),
+        strip.text = element_blank()) +
+  scale_x_continuous(breaks = c(50000, 70000, 90000),
+                     labels = c("50", "70", "90")) +
+  scale_y_continuous(limits = c(0, 3000),
+                     breaks = c(500, 1500, 2500),
+                     labels = c("0.5", "1.5", "2.5"))
+
+mng_fsc_tadh1_singlets
+```
+
+R is similarly low for these strains
+
+## filter the ungated dataset for strains with ADH1 terminator
+
+```{r tadh1_ungated}
+flow_data_all_tadh1 <-
+  flow_data_all %>%
+  dplyr::filter(
+    Three_prime_UTR == "ADH1", 
+    !stringr::str_detect(Code, "control"), # exclude no stain samples
+    !Five_prime_UTR %in% c("PGK1", "SUN4")) %>% # exclude these because they are included in the swapped UTRs plot
+  mutate(Strain = factor(interaction(Five_prime_UTR, Background), levels = c(
+          "xintless.Wild Type",
+          "xintless.ssd1Δ",
+          "delSBM1x.Wild Type",
+          "delSBM1x.ssd1Δ",
+          "delSBM12x.Wild Type",
+          "delSBM12x.ssd1Δ",
+          "delSBMregx.Wild Type",
+          "delSBMregx.ssd1Δ",
+          "mutSBM1x.Wild Type",
+          "mutSBM1x.ssd1Δ",
+          "mutSBM12x.Wild Type",
+          "mutSBM12x.ssd1Δ",
+          "mutSBM12altx.Wild Type",
+          "mutSBM12altx.ssd1Δ")))
+```
+
+### plot mNeonGreen vs FSC for this dataset
+
+```{r FITC_vs_FSC_A_tadh1, fig.height = 12, fig.width = 6}
+mng_fsc_tadh1 <- ggplot(
+  data = flow_data_all_tadh1,
+  aes(x = FSC_A, y = FITC_A)) +
+  geom_hex(bins = 100) +
+  scale_fill_gradientn(colours = rainbow(6)[1:5]) +
+  stat_cor(
+    method = "pearson",
+    aes(label = ..r.label..),
+    label.sep = "",      
+    r.accuracy = 0.01,    
+    label.x = 0,
+    label.y = 9000) + # annotates with pearson R value
+  ggh4x::facet_wrap2(
+  ~ Strain,
+  scales = "fixed",
+  ncol = 2,
+  axes = "all",
+  remove_labels = "all") +
+  labs(x = "mNGFlow", y = "Forward scatter area") +
+  theme(text = element_text(family = "sans"),
+        axis.line = element_line(colour= "grey80"),
+        axis.ticks = element_line(colour = "grey80"),
+        strip.text = element_blank()) +
+  scale_x_continuous(breaks = c(50000,150000,250000),
+                     labels = c("50", "150", "250")) +
+  scale_y_continuous(limits = c(0, 10000),
+                     breaks = c(2000, 6000),
+                     labels = c("2", "6"))
+
+mng_fsc_tadh1
+```
+
+R is similarly high for these strains
+
+# Ridgeplots of intact UTR strains, and mutated 5 prime UTR strains
+
+## Intact UTRs first
+
+```{r FITC/FSC_A_ridgeplot_wholeUTRonly_singlets, fig.height = 10, fig.width = 8}
+mng_singlets_utr <- ggplot(data = flow_data_gated_buddedsinglets_utrs, aes(
+  x = FITC_A / FSC_A, y = Construct_hr, colour = Background)) +
+  stat_density_ridges(
+    scale = 1,
+    linewidth = 1.5,
+    alpha = 0.2,
+    bandwidth = 0.001,
+    aes(fill = Background),
+    show.legend = FALSE) +
+  stat_summary(aes(
+      group = interaction(Code, Techrep), 
+      shape = Techrep, 
+      colour = Background),
+    fun = mean,
+    geom = "point",
+    size = 6,
+    stroke = 2,
+    position = position_quasirandom(groupOnX = FALSE, width = 0.15)) + # plots means for each replicate as different shapes, coloured by Background
+  labs(x = "mNGFlow/Forward Scatter Area", y = "Strain") +
+  theme(
+    panel.grid.major.x = element_line(colour = "grey80"),
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.y = element_text(size = 16)) +
+  coord_cartesian(expand = TRUE, clip = 'off') +
+  scale_x_continuous(
+    limits = c(0.0, 0.04),
+    breaks = c(0, 0.01, 0.02, 0.03),
+    labels = c("0", "", "0.02", "")) +
+  scale_colour_manual(values = c("#005a00ff", "#7edc7eff")) +
+  scale_fill_manual(values = c("#005a0033", "#7edc7e33")) + # These colours will change
+  scale_shape_manual(values = c(0, 1, 2))
+
+mng_singlets_utr
+```
+
+## Ridgeplot of mutant 5 prime UTR strains
+
+```{r FITC/FSC_ridgeplot_tADH1_singlets, fig.height = 10, fig.width = 8}
+mng_singlets_tadh1 <- ggplot(data = flow_data_gated_buddedsinglets_tadh1, aes(
+  x = FITC_A / FSC_A, y = Five_prime_UTR_hr, colour = Background)) +
+  stat_density_ridges(
+    scale = 1,
+    linewidth = 1.5,
+    alpha = 0.2,
+    bandwidth = 0.001,
+    aes(fill = Background),
+    show.legend = FALSE) +
+  stat_summary(aes(
+      group = interaction(Code, Techrep),
+      shape = Techrep,
+      colour = Background),
+    fun = mean,
+    geom = "point",
+    size = 4,
+    stroke = 2,
+    position = position_quasirandom(groupOnX = FALSE, width = 0.1)) +
+  labs(x = "mNGFlow/Forward Scatter Area", y = "Strain") +
+  theme(
+    panel.grid.major.x = element_line(colour = "grey80"),
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.y = element_text(size = 16)) +
+  coord_cartesian(expand = TRUE, clip = 'off') +
+  scale_x_continuous(
+    limits = c(0.0, 0.04),
+    breaks = c(0, 0.01, 0.02, 0.03),
+    labels = c("0", "", "0.02", "")) +
+  scale_colour_manual(values = c("#005a00ff", "#7edc7eff")) +
+  scale_fill_manual(values = c("#005a0033", "#7edc7e33")) +
+  scale_shape_manual(values = c(0, 1, 2))
+
+mng_singlets_tadh1
+```
+
+# Calculate linear model coefficients for mNeonGreen/FSC_A, for comparison with RT-qPCR data
+
+# First bring in the tADH1 and whole UTR RT-qPCR coefficients
+
+```{r RTqPCR_coeff}
+fit_RTqPCR_tADH1_tsv <- read.delim(
+  here::here("fit_RTqPCR_tADH1.tsv"),
+  row.names = 1)
+
+fit_RTqPCR_utrs_tsv <- read.delim(
+  here::here("fit_RTqPCR_utrs.tsv"),
+  row.names = 1)
+```
+
+# tADH1 strains
+## Match levels and names of the tADH1 Strains to the RT-qPCR Strains
+
+```{r match_tADH1}
+flow_data_gated_buddedsinglets_tadh1 <-
+  flow_data_gated_buddedsinglets_tadh1 %>%
+  mutate(Strain = factor(Strain, levels = c(
+      "xintless.Wild Type",
+      "mutSBM12altx.Wild Type",
+      "mutSBM12x.Wild Type",
+      "mutSBM1x.Wild Type",
+      "delSBMregx.Wild Type",
+      "delSBM12x.Wild Type",
+      "delSBM1x.Wild Type",
+      "mutSBM12altx.ssd1Δ",
+      "mutSBM12x.ssd1Δ",
+      "mutSBM1x.ssd1Δ",
+      "delSBMregx.ssd1Δ",
+      "delSBM12x.ssd1Δ",
+      "delSBM1x.ssd1Δ",
+      "xintless.ssd1Δ")),
+    Strain = forcats::fct_recode(Strain,
+      "Native (no intron).Wild Type" = "xintless.Wild Type",
+      "Sub-3.Wild Type" = "mutSBM12altx.Wild Type",             
+      "Sub-2.Wild Type" = "mutSBM12x.Wild Type",             
+      "Sub-1.Wild Type" = "mutSBM1x.Wild Type",            
+      "Del-3.Wild Type" = "delSBMregx.Wild Type",             
+      "Del-2.Wild Type" = "delSBM12x.Wild Type",            
+      "Del-1.Wild Type" = "delSBM1x.Wild Type",             
+      "Sub-3.ssd1delta" = "mutSBM12altx.ssd1Δ",            
+      "Sub-2.ssd1delta" = "mutSBM12x.ssd1Δ",            
+      "Sub-1.ssd1delta" = "mutSBM1x.ssd1Δ",            
+      "Del-3.ssd1delta" = "delSBMregx.ssd1Δ",             
+      "Del-2.ssd1delta" = "delSBM12x.ssd1Δ",             
+      "Del-1.ssd1delta" = "delSBM1x.ssd1Δ",            
+      "Native (no intron).ssd1delta" = "xintless.ssd1Δ"))
+```
+
+## Fit a log10 linear model to the tADH1 dataset that uses 0 as the intercept (to calculate Strain means)
+
+```{r lm_tADH1}
+fit_FITC_tADH1 <- lm(log10(FITC_A/FSC_A) ~ 0 + Strain,
+   data = flow_data_gated_buddedsinglets_tadh1)
+```
+
+## Plot tADH1 flow cytometry coefficients against tADH1 RT-qPCR coefficients
+
+```{r plot_coeff_tADH1_flow_RTqPCR, fig.height = 6, fig.width = 8}
+# Inner join the RT-qPCR and flow coefficients into a table
+
+coeff_tADH1 <- enframe(
+  fit_FITC_tADH1$coefficients,
+  name = "Strain",
+  value = "FITC_coef") %>%
+  inner_join(
+    tibble(
+      Strain = rownames(fit_RTqPCR_tADH1_tsv),
+      qPCR_coef = fit_RTqPCR_tADH1_tsv$Estimate),
+    by = "Strain") %>%
+  mutate(
+  background = str_extract(Strain, "[^.]+$"),
+  background = factor(background,
+                      levels = c("Wild Type", "ssd1delta"),
+                      labels = c("Wild Type", "ssd1Δ")),
+  UTRcombo = str_extract(Strain, ".*(?=\\.[^.]+$)"),
+  UTRcombo = sub("^Strain", "", UTRcombo))
+
+# Plot the RT-qPCR coefficients against the flow coefficients
+
+FITC_RTqPCR <- ggplot(coeff_tADH1, aes(x = qPCR_coef, y = FITC_coef)) +
+  geom_point(aes(colour = background, shape = UTRcombo), stroke = 2.25, size = 5) +
+  scale_y_continuous() +
+  scale_x_continuous() +
+  coord_equal() +
+  theme(panel.grid.major.x = element_line(colour= "grey80"),
+        panel.grid.major.y = element_line(colour= "grey80"),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.y = element_text(vjust = -0.1)) +
+  stat_cor(
+    method = "pearson",
+    aes(label = ..r.label..),
+    label.sep = "",      
+    r.accuracy = 0.01,    
+    label.x = -0.9,
+    label.y = -1.8) + # annotates with pearson R value
+  guides(shape=guide_legend(ncol=1)) +
+  labs(shape = "5' UTR", y = "mNGFlow/FSC-A", x = expression(Delta * Delta * Cq ~ "(RT-qPCR)")) +
+  scale_colour_manual(values = c("#005a00ff", "#7edc7eff")) +
+  scale_fill_manual(values = c("#005a0033", "#7edc7e33")) +
+  scale_shape_manual(values = c(0:6))+
+  theme(legend.position = "right") # for reference
+
+FITC_RTqPCR
+```
+
+Little correlation
+
+## Fit a log10 linear model to the tADH1 data that uses the no intron strain as reference, to calculate fold changes 
+
+```{r fc_tADH1}
+flow_data_gated_buddedsinglets_tadh1 <-
+  flow_data_gated_buddedsinglets_tadh1 %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Strain = relevel(as.factor(Strain), ref = "Native (no intron).Wild Type"))
+
+fit_FITC_tADH1_diffs <- lm(
+  log10(FITC_A/FSC_A) ~ Strain,
+  data = flow_data_gated_buddedsinglets_tadh1)
+
+foldchange_FITC_tADH1_diffs <- 10^{ coef(fit_FITC_tADH1_diffs)[-1] }
+foldchange_FITC_tADH1_diffs
+```
+
+# whole UTR strains
+## Match levels and names of the whole UTR Strains to the RT-qPCR Strains
+
+```{r match_utrs}
+flow_data_gated_buddedsinglets_utrs <-
+  flow_data_gated_buddedsinglets_utrs %>%
+  dplyr::filter(FITC_A > 0) %>% # for calculating log10 coefficients
+  mutate(Strain = factor(Strain, levels = c(
+        "SUN4.SUN4.Wild Type",
+        "SUN4.ADH1.Wild Type",
+        "xintless.ADH1.Wild Type",
+        "PGK1.ADH1.Wild Type",
+        "xintless.SUN4.Wild Type",
+        "PGK1.SUN4.Wild Type",
+        "SUN4.ADH1.ssd1Δ",
+        "xintless.ADH1.ssd1Δ",
+        "PGK1.ADH1.ssd1Δ",
+        "SUN4.SUN4.ssd1Δ",
+        "xintless.SUN4.ssd1Δ",
+        "PGK1.SUN4.ssd1Δ")),
+    Strain = forcats::fct_recode(Strain,
+        "WT.SUN4.Wild Type" = "SUN4.SUN4.Wild Type",
+        "WT.ADH1.Wild Type" = "SUN4.ADH1.Wild Type",
+        "intronless.ADH1.Wild Type" = "xintless.ADH1.Wild Type",
+        "PGK1.ADH1.Wild Type" = "PGK1.ADH1.Wild Type",
+        "intronless.SUN4.Wild Type" = "xintless.SUN4.Wild Type",
+        "PGK1.SUN4.Wild Type" = "PGK1.SUN4.Wild Type",
+        "WT.ADH1.ssd1delta" = "SUN4.ADH1.ssd1Δ",
+        "intronless.ADH1.ssd1delta" = "xintless.ADH1.ssd1Δ",
+        "PGK1.ADH1.ssd1delta" = "PGK1.ADH1.ssd1Δ",
+        "WT.SUN4.ssd1delta" = "SUN4.SUN4.ssd1Δ",
+        "intronless.SUN4.ssd1delta" = "xintless.SUN4.ssd1Δ",
+        "PGK1.SUN4.ssd1delta" = "PGK1.SUN4.ssd1Δ"))
+```
+
+## Fit a log10 linear model to the tADH1 dataset that uses 0 as the intercept (to calculate Strain means)
+
+```{r lm_utrs}
+fit_FITC_utrs <- lm(log10(FITC_A/FSC_A) ~ 0 + Strain,
+   data = flow_data_gated_buddedsinglets_utrs)
+```
+
+## Plot whole UTR flow cytometry coefficients against RT-qPCR coefficients
+
+```{r plot_coeff_utrs_flow_RTqPCR, fig.height = 6, fig.width = 8}
+coeff_utrs <- enframe(fit_FITC_utrs$coefficients,
+                      name = "Strain",
+                      value = "FITC_coef") %>%
+  inner_join(tibble(
+    Strain = rownames(fit_RTqPCR_utrs_tsv),
+    qPCR_coef = fit_RTqPCR_utrs_tsv$Estimate),
+  by = "Strain") %>%
+  mutate(
+    background = str_extract(Strain, "[^.]+$"),
+    background = factor(background,
+      levels = c("Wild Type", "ssd1delta"),
+      labels = c("Wild Type", "ssd1Δ")),
+    UTRcombo = str_extract(Strain, ".*(?=\\.[^.]+$)"),
+    UTRcombo = forcats::fct_recode(
+      UTRcombo,
+      "SUN4  SUN4" = "StrainWT.SUN4",
+      "SUN4  ADH1" = "StrainWT.ADH1",
+      "SUN4 no intron  SUN4" = "Strainintronless.ADH1",
+      "PGK1  ADH1" = "StrainPGK1.ADH1",
+      "PGK1  SUN4" = "StrainPGK1.SUN4"))
+
+FITC_RTqPCR_utrs <- ggplot(coeff_utrs, aes(y = FITC_coef, x = qPCR_coef)) +
+  geom_point(aes(colour = background, shape = UTRcombo), stroke = 2.25, size = 5) +
+  scale_y_continuous() +
+  scale_x_continuous() +
+  coord_equal() +
+  stat_cor(
+    method = "pearson",
+    aes(label = ..r.label..),
+    label.sep = "",      
+    r.accuracy = 0.01,    
+    label.x = -0.1,
+    label.y = -1.8) + # annotates with pearson R value
+  theme(panel.grid.major.x = element_line(colour= "grey80"),
+        panel.grid.major.y = element_line(colour= "grey80"),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.y = element_text(vjust = -0.1)) +
+  guides(shape=guide_legend(ncol=1)) +
+  labs(shape = "5' UTR  3' UTR", y = "mNGFlow/FSC-A", x = expression(Delta * Delta * Cq ~ "(RT-qPCR)")) +
+  scale_colour_manual(values = c("#005a00ff", "#7edc7eff")) +
+  scale_fill_manual(values = c("#005a0033", "#7edc7e33")) +
+  scale_shape_manual(values = c(0:6))+
+  theme(legend.position = "right") # for reference
+
+FITC_RTqPCR_utrs
+```
+
+Little correlation
+
+## Fit a log10 linear model to the tADH1 data that uses the no intron strain as reference, to calculate fold changes
+
+```{r fc_utrs}
+flow_data_gated_buddedsinglets_utrs <-
+  flow_data_gated_buddedsinglets_utrs %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Strain = relevel(as.factor(Strain), ref = "WT.SUN4.Wild Type"))
+
+fit_FITC_utrs_diffs <- lm(
+  log10(FITC_A/FSC_A) ~ Strain,
+  data = flow_data_gated_buddedsinglets_utrs)
+
+foldchange_FITC_utrs_diffs <- 10^{ coef(fit_FITC_utrs_diffs)[-1] }
+foldchange_FITC_utrs_diffs
+```
