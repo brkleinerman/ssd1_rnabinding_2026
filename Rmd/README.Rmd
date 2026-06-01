@@ -1,0 +1,27 @@
+---
+title: "README"
+output:
+  github_document:
+    toc: true
+---
+
+# Overview
+
+This directory contains .Rmd scripts to analyze .fcs and Cq values, with corresponding .html output files.
+
+# Inputs
+
+* `2026-05-12_SUN4_UTR_flow` takes as input .fcs files in "SUN4_UTR_flow" (see input > FCS)
+* `2026-05-11_Ssd1_pointmutant_flow` takes .fcs files in "Ssd1_pointmutants_flow" (see input > FCS)
+* `2026-05-12_SUN4wholeUTRs_RTqPCR` takes Ct values in "wholeUTRs_Ct" (see input > RTqPCR_Ct)
+* `2026-05-12_SUN4_5UTRmuts_RTqPCR` takes Ct values in "5UTRmuts_Ct" (see input > RTqPCR_Ct)
+
+These scripts are used to generate all flow cytometry ridgeplots and RT-qPCR dotplots (update this)
+
+# Results
+
+Describe the outputs here.
+
+```{r}
+sessionInfo()
+```
