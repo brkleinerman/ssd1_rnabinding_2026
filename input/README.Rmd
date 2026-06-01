@@ -1,0 +1,35 @@
+---
+title: "README"
+output:
+  github_document:
+    toc: true
+---
+
+# Overview
+
+This directory contains raw .fcs files and Cq values for analysis
+
+# Inputs
+
+* RTqPCR_Ct - raw Ct (Cq) values used to calculate deltadeltaCq values
+  + `wholeUTRs_Ct` - input for `2026-05-12_SUN4_5UTRmuts_RTqPCR.Rmd`
+  + `5UTRmuts_Ct` - input for `2026-05-12_SUN4wholeUTRs_RTqPCR.Rmd`
+* Flow_metadata - metadata to analyze .fcs files
+  + `2025-09-04_SUN4-UTR_flowplan.xlsx` - for `2026-05-12_SUN4_UTR_flow.Rmd`
+  + `2026-02-17_Ssd1_pointmutants_flowplan.xlsx` - for `2026-05-11_Ssd1_pointmutant_flow.Rmd`
+* FCS - .fcs files from acquisition on our BD LSRFortessa Cell Analyzer.
+  + `SUN4_UTR_flow` - `2026-05-12_SUN4_UTR_flow.Rmd`
+  + `Ssd1_pointmutants_flow` - for `2026-05-11_Ssd1_pointmutant_flow.Rmd`
+* RTqPCR_coeff - linear model deltadeltaCq coefficients. 0 was added to intercepts to calculate strain means.
+  + `fit_RTqPCR_tADH1.tsv` - this is an output from `2026-05-12_SUN4_5UTRmuts_RTqPCR.Rmd`, to be read into `2026-05-12_SUN4_UTR_flow.Rmd`
+  + `fit_RTqPCR_utrs.tsv` - this is an output from `2026-05-12_SUN4wholeUTRs_RTqPCR.Rmd`, to be read into `2026-05-12_SUN4_UTR_flow.Rmd`
+
+All scripts referred to are in the Rmd folder in this repository.
+
+# Results
+
+Describe the outputs here.
+
+```{r}
+sessionInfo()
+```
